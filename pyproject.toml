@@ -1,0 +1,23 @@
+[project]
+name = "langchain-proj"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14.2"
+dependencies = [
+    "asyncio>=4.0.0",
+    "ipykernel>=7.2.0",
+    "ipywidgets>=8.1.8",
+    "langchain>=1.2.16",
+    "langchain-community>=0.4.1",
+    "langchain-huggingface>=1.2.2",
+    "nest-asyncio>=1.6.0",
+    "pandas>=3.0.2",
+    "playwright>=1.59.0",
+    "qdrant-client>=1.17.1",
+    "rank-bm25>=0.2.2",
+    "seaborn>=0.13.2",
+    "sentence-transformers>=5.4.1",
+    "torch>=2.11.0",
+    "tqdm>=4.67.3",
+]
