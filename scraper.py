@@ -16,6 +16,14 @@ def recipe_id_to_uuid(recipe_id: int) -> str:
 def url_to_id(url: str) -> int:
     return int(url.rstrip("/").split("/")[-1])
 
+def parse_minutes(cook_time: str) -> int | None:
+    hours = re.search(r"(\d+)\s*час", cook_time)
+    mins = re.search(r"(\d+)\s*мин", cook_time)
+    total = 0
+    if hours: total += int(hours.group(1)) * 60
+    if mins: total += int(mins.group(1))
+    return total if total > 0 else None
+
 
 async def get_links(query: str, limit: int = 10) -> list[str]:
     async with async_playwright() as pw:
@@ -96,11 +104,11 @@ async def parse_page(page, url: str) -> dict:
         "categories": categories,
         "cuisine": cuisine,
         "ingredients": ingredients,
-        "cook_time": cook_time,
-        "per100_kcal": per100_kcal,
-        "per100_protein": per100_protein,
-        "per100_fat": per100_fat,
-        "per100_carbs": per100_carbs,
+        "cook_time_minutes": parse_minutes(cook_time),
+        "per100_kcal": float(per100_kcal.replace(",", ".")) if per100_kcal else None,   
+        "per100_protein": float(per100_protein.replace(",", ".")) if per100_protein else None, 
+        "per100_fat": float(per100_fat.replace(",", ".")) if per100_fat else None,      
+        "per100_carbs": float(per100_carbs.replace(",", ".")) if per100_carbs else None,
         "destiny": destiny,
         "tags": tags,
         "tastes": tastes,
