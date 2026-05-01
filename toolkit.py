@@ -37,7 +37,7 @@ class FindSimilarInput(BaseModel):
 
 
 class ScrapeAndSaveInput(BaseModel):
-    query: str = Field(description="Только название блюда транслитом, одно-два слова, например 'borsch', 'plov', 'pelmeni', 'shokoladnyj-tort'. Не передавай полные фразы.")
+    query: str = Field(description="Название блюда на русском, например 'борщ', 'плов', 'пельмени', 'шоколадный торт'.")
     limit: int = Field(default=10, description="Количество рецептов для скрапинга от 1 до 10, по умолчанию 10")
 
 
@@ -68,6 +68,7 @@ class RecipeToolkit:
             """Ищет рецепты в базе данных БЕЗ фильтров.
             Используй ПЕРВЫМ при любом запросе о еде — только название блюда.
             Если нужное блюдо найдено И есть фильтры — используй search_recipes_with_filters."""
+            
             results = self.vector_store.similarity_search(query, k=k)
             if not results:
                 return "Ничего не найдено."
@@ -91,6 +92,7 @@ class RecipeToolkit:
         ) -> str:
             """Ищет рецепты С фильтрами по времени, калориям, БЖУ и аллергенам.
             Используй ТОЛЬКО после search_recipes когда убедился что блюдо есть в базе."""
+
             filters = [
                 ("metadata.cook_time_minutes", min_cook_time, max_cook_time),
                 ("metadata.per100_kcal",       min_calories,  max_calories),
@@ -133,6 +135,7 @@ class RecipeToolkit:
             """Находит похожие рецепты по ID существующего рецепта.
             Используй когда пользователь хочет найти что-то похожее на конкретный рецепт
             и у тебя уже есть его ID из предыдущего поиска."""
+
             uuid = recipe_id_to_uuid(recipe_id)
             results = self.client.query_points(
                 collection_name=self.collection_name,
@@ -151,7 +154,8 @@ class RecipeToolkit:
         def scrape_and_save_recipe(query: str, limit: int = 10) -> str:
             """Ищет рецепты на povarenok.ru, парсит и сохраняет в базу данных.
             Используй ТОЛЬКО если search_recipes не нашёл нужного блюда вообще.
-            Принимает название блюда транслитом: 'borsch', 'plov', 'pelmeni'."""
+            Принимает название блюда на русском: 'борщ', 'плов', 'пельмени'."""
+
             recipes = asyncio.run(scrape(query, self.vector_store, limit=limit))
             if not recipes:
                 return f"Не удалось найти рецепты по запросу '{query}'."

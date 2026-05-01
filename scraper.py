@@ -5,6 +5,7 @@ import re
 from playwright.async_api import async_playwright
 from langchain_core.documents import Document
 from uuid import UUID
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 
 BASE_URL = "https://www.povarenok.ru"
@@ -34,7 +35,10 @@ async def get_links(query: str, limit: int = 10) -> list[str]:
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
         )
         page = await context.new_page()
-        await page.goto(f"{BASE_URL}/recipes/poisk/{query}/?orderby=rating")
+        await page.goto(f"{BASE_URL}/recipes/search/")
+        await asyncio.sleep(1)
+        await page.fill("#search_name_id", query)
+        await page.click("#sf_btn_1")
         await asyncio.sleep(2)
         anchors = await page.query_selector_all("article.item-bl h2 a")
         links = []
@@ -45,7 +49,7 @@ async def get_links(query: str, limit: int = 10) -> list[str]:
         await browser.close()
         return links
 
-
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 async def parse_page(page, url: str) -> dict:
     await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
     await asyncio.sleep(random.uniform(0.8, 1.5))

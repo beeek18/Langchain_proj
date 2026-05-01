@@ -1046,6 +1046,7 @@ dependencies = [
     { name = "rank-bm25" },
     { name = "seaborn" },
     { name = "sentence-transformers" },
+    { name = "tenacity" },
     { name = "torch" },
     { name = "tqdm" },
 ]
@@ -1066,6 +1067,7 @@ requires-dist = [
     { name = "rank-bm25", specifier = ">=0.2.2" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "sentence-transformers", specifier = ">=5.4.1" },
+    { name = "tenacity", specifier = ">=9.1.4" },
     { name = "torch", specifier = ">=2.11.0" },
     { name = "tqdm", specifier = ">=4.67.3" },
 ]
