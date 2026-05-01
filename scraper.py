@@ -5,7 +5,7 @@ import re
 from playwright.async_api import async_playwright
 from langchain_core.documents import Document
 from uuid import UUID
-from tenacity import retry, stop_after_attempt, wait_fixed
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_not_exception_type
 
 
 BASE_URL = "https://www.povarenok.ru"
@@ -27,6 +27,11 @@ def parse_minutes(cook_time: str) -> int | None:
     return total if total > 0 else None
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(5),
+    retry=retry_if_not_exception_type(ValueError)
+)
 async def get_links(query: str, limit: int = 10) -> list[str]:
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
@@ -37,6 +42,16 @@ async def get_links(query: str, limit: int = 10) -> list[str]:
         page = await context.new_page()
         await page.goto(f"{BASE_URL}/recipes/search/")
         await asyncio.sleep(1)
+
+        # Закрываем модалку если появилась
+        try:
+            cross = await page.query_selector(".dr__cross")
+            if cross:
+                await cross.click()
+                await asyncio.sleep(0.5)
+        except Exception:
+            pass
+        
         await page.fill("#search_name_id", query)
         await page.click("#sf_btn_1")
         await asyncio.sleep(2)
@@ -49,17 +64,34 @@ async def get_links(query: str, limit: int = 10) -> list[str]:
         await browser.close()
         return links
 
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    retry=retry_if_not_exception_type(ValueError)
+)
 async def parse_page(page, url: str) -> dict:
-    await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+    await page.goto(url, wait_until="domcontentloaded")
     await asyncio.sleep(random.uniform(0.8, 1.5))
     await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
     await asyncio.sleep(0.5)
     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
     await asyncio.sleep(0.5)
 
+    # Закрываем модалку если появилась
+    try:
+        cross = await page.query_selector(".dr__cross")
+        if cross:
+            await cross.click()
+            await asyncio.sleep(0.5)
+    except Exception:
+        pass
+
     title_el = await page.query_selector("h1")
     title = (await title_el.inner_text()).strip() if title_el else ""
+
+    # Если страница не релевантна, то выбрасываем ошибку
+    if "Главная" in title or "Рецепты" in title:
+        raise ValueError(f"Нерелевантная страница: {url}")
 
     crumbs = await page.query_selector_all("[itemprop='recipeCategory'] a")
     categories = [(await c.inner_text()).strip() for c in crumbs]

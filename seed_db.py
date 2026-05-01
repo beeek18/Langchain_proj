@@ -13,6 +13,7 @@ import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 import torch
+import random
 
 load_dotenv()
 
@@ -165,6 +166,7 @@ async def main():
         try:
             recipes = await scrape(query, vector_store, limit=10)
             mark_seeded(query)
+            await asyncio.sleep(random.uniform(3, 6))
             count = client.count(collection_name=COLLECTION_NAME).count
             print(f"  ✅ +{len(recipes)} рецептов | всего в БД: {count}")
         except Exception as e:

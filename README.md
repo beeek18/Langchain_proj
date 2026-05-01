@@ -50,6 +50,7 @@ filters()
 ├── toolkit.py          # LangChain тулкит (4 тула)
 ├── scraper.py          # Playwright скрапер povarenok.ru
 ├── guard.py            # Guard LLM + декоратор + стоп-токены
+├── seed_db.py          # Наполнение БД популярными рецептами
 ├── qdrant_db/          # Локальная векторная БД
 └── .env                # Ключи API
 ```
@@ -78,7 +79,7 @@ filters()
 
 ```bash
 uv add qdrant-client langchain-huggingface langchain-openai langchain-qdrant \
-       playwright langsmith python-dotenv nest-asyncio
+       playwright langsmith python-dotenv nest-asyncio sentence-transformers tenacity
 uv run playwright install chromium
 ```
 
@@ -92,7 +93,15 @@ LANGSMITH_API_KEY=ls__...
 LANGSMITH_PROJECT=recipe-agent
 ```
 
-### 3. Запуск
+### 3. Наполнение БД
+
+```bash
+uv run seed_db.py
+```
+
+Скрипт загружает 300 популярных блюд по категориям. Помнит где остановился — можно прерывать и продолжать.
+
+### 4. Запуск
 
 Открой `main.ipynb` и запускай ячейки сверху вниз.
 
@@ -108,6 +117,12 @@ sid, hist = run_agent("хочу плов за час и не более 200 кк
 # С аллергией
 sid, hist = run_agent("что-нибудь без яиц и молока", ...)
 
+# По кухне
+sid, hist = run_agent("хочу итальянское", ...)
+
+# По случаю
+sid, hist = run_agent("что приготовить на день рождения", ...)
+
 # Продолжение диалога
 sid, hist = run_agent("найди похожие на первый", ..., history=hist)
 ```
@@ -116,8 +131,16 @@ sid, hist = run_agent("найди похожие на первый", ..., histor
 
 **Стоп-токены** — удаляются системные токены всех популярных LLM (`[INST]`, `<|im_start|>`, `Human:` и др.) и паттерны prompt injection (`IGNORE ALL PREVIOUS`, `OVERRIDE INSTRUCTIONS` и др.)
 
-**Guard LLM** — отдельная быстрая модель классифицирует запрос:
+**Guard LLM** — отдельная модель классифицирует запрос:
 - `recipe` → передаём агенту
 - `scam` → возвращаем токсичный ответ
 
-Декоратор `@guard_decorator(llm)` применяется поверх `run_agent` и не пропускает вредоносные запросы к основному агенту.
+Декоратор `@guard_decorator(llm)` применяется поверх `run_agent` — вредоносные запросы не доходят до основного агента.
+
+## Устойчивость к сбоям
+
+**Tenacity** — декоратор `@retry` на `parse_page` делает 3 попытки с паузой 2 секунды между ними при таймаутах или сетевых ошибках.
+
+**Защита от зацикливания** — `used_calls` блокирует повторные вызовы одного тула с теми же аргументами.
+
+**Продолжение после сбоя** — `seed_db.py` сохраняет прогресс в `seeded.txt` и продолжает с места остановки.
