@@ -1,8 +1,11 @@
 import asyncio
+import logging
 import os
+import sys
 import torch
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 from aiogram.filters import CommandStart
 from langchain_core.messages import SystemMessage
@@ -18,6 +21,41 @@ from agent import run_agent_bot
 
 load_dotenv()
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stderr)],
+    force=True,
+)
+log = logging.getLogger("telegram_bot")
+
+TELEGRAM_MAX_LEN = 4000
+
+
+def _chunk_for_telegram(text: str, limit: int = TELEGRAM_MAX_LEN) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    return [text[i : i + limit] for i in range(0, len(text), limit)]
+
+
+async def _answer_user(message: Message, text: str, *, use_markdown: bool) -> None:
+    for part in _chunk_for_telegram(text):
+        if use_markdown:
+            try:
+                await message.answer(part, parse_mode="Markdown")
+            except TelegramBadRequest:
+                await message.answer(part)
+        else:
+            await message.answer(part)
+
+
+def _require_env(name: str) -> str:
+    value = (os.environ.get(name) or "").strip()
+    if not value:
+        raise RuntimeError(f"Задай переменную окружения {name} (см. .env.example)")
+    return value
+
+
 # ── Инициализация ──────────────────────────
 client = QdrantClient(path="./qdrant_db")
 if not client.collection_exists("recipes"):
@@ -31,7 +69,7 @@ embeddings_model = HuggingFaceEmbeddings(
 )
 vector_store = QdrantVectorStore(client=client, collection_name="recipes", embedding=embeddings_model)
 
-llm = ChatOpenAI(model="gpt-5-nano", api_key=os.environ["OPENAI_API_KEY"], max_tokens=2000)
+llm = ChatOpenAI(model="gpt-5-nano", api_key=_require_env("OPENAI_API_KEY"), max_tokens=2000)
 
 recipe_toolkit = RecipeToolkit(vector_store=vector_store)
 tools = recipe_toolkit.get_tools()
@@ -39,19 +77,20 @@ tools_map = {t.name: t for t in tools}
 llm_with_tools = llm.bind_tools(tools)
 
 SYSTEM_MESSAGE = SystemMessage(content="""Ты — кулинарный помощник. Помогаешь пользователям найти рецепты.
+
 Логика работы — строго по шагам:
-1. Если пользователь просит похожие / «ещё варианты» после уже показанного рецепта — вызови find_similar(recipe_id, limit) с ID из последнего ответа или из ToolMessage в истории (limit до 10). Не вызывай search_recipes, если уже есть подходящий recipe_id в контексте.
-2. Иначе для нового блюда ВСЕГДА начинай с search_recipes(query) — только название блюда, без фильтров.
-3. Если результаты РЕЛЕВАНТНЫ:
-   - Если есть фильтры (время, калории, БЖУ, аллергены) — вызови search_recipes_with_filters
-   - Если фильтров нет — сразу отвечай пользователю
-4. Если результаты НЕРЕЛЕВАНТНЫ или база пуста — вызови scrape_and_save_recipe ОДИН РАЗ
-5. После scrape_and_save_recipe — НЕ иди снова в search_recipes, используй результаты scrape напрямую
+1. Если пользователь просит похожие / «ещё варианты» / «на твой вкус» после уже показанного рецепта — вызови find_similar(recipe_id, limit) с ID из последнего ответа или из ToolMessage в истории (limit до 10). Не вызывай search_recipes, если уже есть подходящий recipe_id в контексте.
+2. Если в запросе есть ограничения по времени готовки, калориям на 100 г, БЖУ или аллергенам — и при этом НЕТ конкретного названия блюда — сразу вызови search_recipes_with_filters с подходящими max_cook_time / max_calories и т.д. и коротким обобщённым query на русском («лёгкое блюдо», «быстро приготовить», «низкокалорийное»). Не подставляй случайный десерт из прошлого контекста.
+3. Иначе для нового блюда с названием начинай с search_recipes(query) — только название блюда, без фильтров.
+4. Если результаты search_recipes релевантны и пользователь (или запрос) требует фильтры — вызови search_recipes_with_filters с тем же смыслом query и фильтрами.
+5. Если фильтров нет после search_recipes — сразу отвечай пользователю.
+6. Если результаты НЕРЕЛЕВАНТНЫ или база пуста — вызови scrape_and_save_recipe ОДИН РАЗ
+7. После scrape_and_save_recipe — НЕ иди снова в search_recipes, используй результаты scrape напрямую
 
 Важно про запросы:
-- Всегда используй конкретное название блюда на русском: 'борщ', 'тирамису', 'плов'
-- Если пользователь написал размыто — сам выбери конкретное блюдо
-- Никогда не передавай абстрактные слова в тулы
+- Для обычного поиска используй конкретное название блюда на русском: 'борщ', 'тирамису', 'плов'
+- Если запрос размытый, но без числовых ограничений — сам выбери конкретное блюдо для search_recipes
+- В ответе пользователю честно сравни рецепты с его ограничениями (если калорийность или время не подходят — скажи об этом)
 
 Формат ответа — ВСЕГДА включай:
 - Название, время готовки, калории на 100г, ингредиенты, ссылку
@@ -63,7 +102,7 @@ SYSTEM_MESSAGE = SystemMessage(content="""Ты — кулинарный помо
 sessions: dict[int, tuple[str, list]] = {}  # user_id → (session_id, history)
 chat_transcripts: dict[int, list[dict]] = {}  # user_id → [{role, content}, ...] для chat_reply
 
-bot = Bot(token=os.environ["TELEGRAM_BOT_TOKEN"])
+bot = Bot(token=_require_env("TELEGRAM_BOT_TOKEN"))
 dp = Dispatcher()
 
 
@@ -84,20 +123,27 @@ async def start(message: Message):
 async def handle_message(message: Message):
     user_id = message.from_user.id
     user_input = message.text
-    log = chat_transcripts.setdefault(user_id, [])
-    log.append({"role": "user", "content": user_input})
+    transcript = chat_transcripts.setdefault(user_id, [])
+    transcript.append({"role": "user", "content": user_input})
 
     # Guard
     status, result = process_query(user_input, llm)
+    log.info("turn user_id=%s status=%s preview=%r", user_id, status, (result or "")[:120])
     if status == "scam":
-        log.append({"role": "assistant", "content": result})
-        await message.answer(result)
+        transcript.append({"role": "assistant", "content": result})
+        await _answer_user(message, result, use_markdown=False)
         return
 
     if status == "chat":
-        answer = chat_reply(llm, session_messages=log)
-        log.append({"role": "assistant", "content": answer})
-        await message.answer(answer)
+        try:
+            answer = chat_reply(llm, session_messages=transcript)
+        except Exception:
+            log.exception("chat_reply failed")
+            answer = "Ошибка при генерации ответа — смотри лог в терминале."
+        if not (answer or "").strip():
+            answer = "Пустой ответ модели — попробуй переформулировать запрос."
+        transcript.append({"role": "assistant", "content": answer})
+        await _answer_user(message, answer, use_markdown=False)
         return
 
     await message.answer("🔍 Ищу рецепт...")
@@ -116,14 +162,17 @@ async def handle_message(message: Message):
             llm_plain=llm,
         )
         sessions[user_id] = (session_id, history)
-        log.append({"role": "assistant", "content": answer})
-        await message.answer(answer, parse_mode="Markdown")
+        if not (answer or "").strip():
+            answer = "Пустой ответ — см. логи в терминале."
+        transcript.append({"role": "assistant", "content": answer})
+        await _answer_user(message, answer, use_markdown=True)
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        log.exception("run_agent_bot failed")
+        await message.answer(f"❌ Ошибка агента: {e}")
 
 
 async def main():
-    print("🤖 Бот запущен")
+    log.info("Бот запущен (polling)")
     await dp.start_polling(bot)
 
 

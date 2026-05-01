@@ -63,8 +63,20 @@ def normalize_message_text(message) -> str:
     return str(raw).strip()
 
 
+def _tool_messages_for_current_turn(messages: list) -> list:
+    """Только ToolMessage после последнего HumanMessage — без прошлых реплик в сессии."""
+    last_human = -1
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], HumanMessage):
+            last_human = i
+            break
+    if last_human < 0:
+        return [m for m in messages if isinstance(m, ToolMessage) and m.content]
+    return [m for m in messages[last_human + 1 :] if isinstance(m, ToolMessage) and m.content]
+
+
 def _tool_observations_blob(messages: list, max_chars: int = 14000) -> str:
-    parts = [str(m.content) for m in messages if isinstance(m, ToolMessage) and m.content]
+    parts = [str(m.content) for m in _tool_messages_for_current_turn(messages)]
     blob = "\n\n---\n\n".join(parts)
     if len(blob) <= max_chars:
         return blob
@@ -135,7 +147,7 @@ async def run_agent_bot(
 
         if not ai_msg.tool_calls:
             text = normalize_message_text(ai_msg)
-            if not text and any(isinstance(m, ToolMessage) for m in messages):
+            if not text and any(isinstance(m, ToolMessage) for m in _tool_messages_for_current_turn(messages)):
                 logger.warning(
                     "run_agent_bot: пустой финальный ответ при наличии ToolMessage, шаг=%s — синтез через llm_plain",
                     step,
