@@ -13,7 +13,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 
 from toolkit import RecipeToolkit
-from guard import process_query
+from guard import process_query, chat_reply
 from agent import run_agent_bot
 
 load_dotenv()
@@ -40,13 +40,13 @@ llm_with_tools = llm.bind_tools(tools)
 
 SYSTEM_MESSAGE = SystemMessage(content="""Ты — кулинарный помощник. Помогаешь пользователям найти рецепты.
 Логика работы — строго по шагам:
-1. ВСЕГДА начинай с search_recipes(query) — только название блюда, без фильтров
-2. Если результаты РЕЛЕВАНТНЫ:
+1. Если пользователь просит похожие / «ещё варианты» после уже показанного рецепта — вызови find_similar(recipe_id, limit) с ID из последнего ответа или из ToolMessage в истории (limit до 10). Не вызывай search_recipes, если уже есть подходящий recipe_id в контексте.
+2. Иначе для нового блюда ВСЕГДА начинай с search_recipes(query) — только название блюда, без фильтров.
+3. Если результаты РЕЛЕВАНТНЫ:
    - Если есть фильтры (время, калории, БЖУ, аллергены) — вызови search_recipes_with_filters
    - Если фильтров нет — сразу отвечай пользователю
-3. Если результаты НЕРЕЛЕВАНТНЫ или база пуста — вызови scrape_and_save_recipe ОДИН РАЗ
-4. После scrape_and_save_recipe — НЕ иди снова в search_recipes, используй результаты scrape напрямую
-5. Если пользователь хочет похожие — используй find_similar с ID из предыдущего ответа
+4. Если результаты НЕРЕЛЕВАНТНЫ или база пуста — вызови scrape_and_save_recipe ОДИН РАЗ
+5. После scrape_and_save_recipe — НЕ иди снова в search_recipes, используй результаты scrape напрямую
 
 Важно про запросы:
 - Всегда используй конкретное название блюда на русском: 'борщ', 'тирамису', 'плов'
@@ -61,6 +61,7 @@ SYSTEM_MESSAGE = SystemMessage(content="""Ты — кулинарный помо
 
 # ── Хранилище сессий ───────────────────────
 sessions: dict[int, tuple[str, list]] = {}  # user_id → (session_id, history)
+chat_transcripts: dict[int, list[dict]] = {}  # user_id → [{role, content}, ...] для chat_reply
 
 bot = Bot(token=os.environ["TELEGRAM_BOT_TOKEN"])
 dp = Dispatcher()
@@ -68,7 +69,9 @@ dp = Dispatcher()
 
 @dp.message(CommandStart())
 async def start(message: Message):
-    sessions.pop(message.from_user.id, None)  # сбрасываем историю
+    uid = message.from_user.id
+    sessions.pop(uid, None)
+    chat_transcripts.pop(uid, None)
     await message.answer(
         "👨‍🍳 Привет! Я кулинарный помощник.\n\n"
         "Спроси меня про любое блюдо и я найду рецепт!\n"
@@ -81,11 +84,20 @@ async def start(message: Message):
 async def handle_message(message: Message):
     user_id = message.from_user.id
     user_input = message.text
+    log = chat_transcripts.setdefault(user_id, [])
+    log.append({"role": "user", "content": user_input})
 
     # Guard
     status, result = process_query(user_input, llm)
     if status == "scam":
+        log.append({"role": "assistant", "content": result})
         await message.answer(result)
+        return
+
+    if status == "chat":
+        answer = chat_reply(llm, session_messages=log)
+        log.append({"role": "assistant", "content": answer})
+        await message.answer(answer)
         return
 
     await message.answer("🔍 Ищу рецепт...")
@@ -101,8 +113,10 @@ async def handle_message(message: Message):
             system_message=SYSTEM_MESSAGE,
             session_id=session_id,
             history=history,
+            llm_plain=llm,
         )
         sessions[user_id] = (session_id, history)
+        log.append({"role": "assistant", "content": answer})
         await message.answer(answer, parse_mode="Markdown")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")

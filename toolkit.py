@@ -1,13 +1,21 @@
 # toolkit.py
-import nest_asyncio
-nest_asyncio.apply()
-
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client.models import Filter, FieldCondition, Range
 from scraper import scrape, recipe_id_to_uuid
+
+
+def run_async(coro):
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(lambda: asyncio.run(coro)).result()
 
 
 class SearchRecipesInput(BaseModel):
@@ -33,7 +41,7 @@ class SearchRecipesWithFiltersInput(BaseModel):
 
 class FindSimilarInput(BaseModel):
     recipe_id: int = Field(description="ID рецепта из поля metadata.id, например 25436. Берётся из результатов search_recipes.")
-    limit: int = Field(default=3, description="Количество похожих рецептов от 1 до 5, по умолчанию 3")
+    limit: int = Field(default=5, ge=1, le=10, description="Сколько похожих рецептов вернуть (от 1 до 10)")
 
 
 class ScrapeAndSaveInput(BaseModel):
@@ -156,7 +164,7 @@ class RecipeToolkit:
             Используй ТОЛЬКО если search_recipes не нашёл нужного блюда вообще.
             Принимает название блюда на русском: 'борщ', 'плов', 'пельмени'."""
 
-            recipes = asyncio.run(scrape(query, self.vector_store, limit=limit))
+            recipes = run_async(scrape(query, self.vector_store, limit=limit))
             if not recipes:
                 return f"Не удалось найти рецепты по запросу '{query}'."
 

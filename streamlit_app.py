@@ -1,9 +1,10 @@
 # streamlit_app.py
+import logging
+import sys
+
 import streamlit as st
-import asyncio
 import os
 import torch
-import nest_asyncio
 from dotenv import load_dotenv
 from langchain_core.messages import SystemMessage
 from langchain_openai import ChatOpenAI
@@ -12,15 +13,22 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 
-from toolkit import RecipeToolkit
-from guard import process_query
+from toolkit import RecipeToolkit, run_async
+from guard import process_query, chat_reply
 from agent import run_agent_bot
 
-nest_asyncio.apply()
 load_dotenv()
 
-st.set_page_config(page_title="🍳 Recipe Agent", page_icon="🍳")
-st.title("🍳 Кулинарный помощник")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stderr)],
+    force=True,
+)
+log = logging.getLogger("streamlit_app")
+
+st.set_page_config(page_title="Recipe Agent", page_icon="🍳")
+st.title("Кулинарный помощник")
 st.caption("Спроси меня про любое блюдо и я найду рецепт!")
 
 
@@ -48,16 +56,17 @@ def init():
 
 llm, llm_with_tools, tools_map = init()
 
+
 SYSTEM_MESSAGE = SystemMessage(content="""Ты — кулинарный помощник. Помогаешь пользователям найти рецепты.
 
 Логика работы — строго по шагам:
-1. ВСЕГДА начинай с search_recipes(query) — только название блюда, без фильтров
-2. Если результаты РЕЛЕВАНТНЫ:
+1. Если пользователь просит похожие / «ещё варианты» / «на твой вкус» после уже показанного рецепта — вызови find_similar(recipe_id, limit) с ID из последнего ответа или из ToolMessage в истории (limit до 10). Не вызывай search_recipes, если уже есть подходящий recipe_id в контексте.
+2. Иначе для нового блюда ВСЕГДА начинай с search_recipes(query) — только название блюда, без фильтров.
+3. Если результаты РЕЛЕВАНТНЫ:
    - Если есть фильтры (время, калории, БЖУ, аллергены) — вызови search_recipes_with_filters
    - Если фильтров нет — сразу отвечай пользователю
-3. Если результаты НЕРЕЛЕВАНТНЫ или база пуста — вызови scrape_and_save_recipe ОДИН РАЗ
-4. После scrape_and_save_recipe — НЕ иди снова в search_recipes, используй результаты scrape напрямую
-5. Если пользователь хочет похожие — используй find_similar с ID из предыдущего ответа
+4. Если результаты НЕРЕЛЕВАНТНЫ или база пуста — вызови scrape_and_save_recipe ОДИН РАЗ
+5. После scrape_and_save_recipe — НЕ иди снова в search_recipes, используй результаты scrape напрямую
 
 Важно про запросы:
 - Всегда используй конкретное название блюда на русском: 'борщ', 'тирамису', 'плов'
@@ -92,22 +101,46 @@ if user_input := st.chat_input("Например: хочу борщ"):
 
     # Guard
     status, result = process_query(user_input, llm)
+    log.info("turn: status=%s result_preview=%r", status, (result or "")[:120])
     if status == "scam":
         st.session_state.messages.append({"role": "assistant", "content": result})
         with st.chat_message("assistant"):
             st.markdown(result)
+    elif status == "chat":
+        with st.chat_message("assistant"):
+            with st.spinner("Пишу ответ..."):
+                try:
+                    answer = chat_reply(llm, session_messages=st.session_state.messages)
+                except Exception:
+                    log.exception("chat_reply failed")
+                    answer = "Ошибка при генерации ответа — смотри терминал, где запущен `streamlit run`."
+            if not (answer or "").strip():
+                answer = "Пустой ответ модели — попробуй переформулировать запрос."
+            st.session_state.messages.append({"role": "assistant", "content": answer})
+            st.markdown(answer)
     else:
         with st.chat_message("assistant"):
             with st.spinner("🔍 Ищу рецепт..."):
-                session_id, answer, history = asyncio.run(run_agent_bot(
-                    user_query=result,
-                    llm_with_tools=llm_with_tools,
-                    tools_map=tools_map,
-                    system_message=SYSTEM_MESSAGE,
-                    session_id=st.session_state.session_id,
-                    history=st.session_state.history,
-                ))
+                try:
+                    session_id, answer, history = run_async(run_agent_bot(
+                        user_query=result,
+                        llm_with_tools=llm_with_tools,
+                        tools_map=tools_map,
+                        system_message=SYSTEM_MESSAGE,
+                        session_id=st.session_state.session_id,
+                        history=st.session_state.history,
+                        llm_plain=llm,
+                    ))
+                except Exception:
+                    log.exception("run_agent_bot failed")
+                    session_id, answer, history = (
+                        st.session_state.session_id,
+                        "Ошибка агента — детали в терминале (stderr), где запущен Streamlit.",
+                        st.session_state.history,
+                    )
                 st.session_state.session_id = session_id
                 st.session_state.history = history
+                if not (answer or "").strip():
+                    answer = "Пустой ответ — см. логи в терминале."
                 st.session_state.messages.append({"role": "assistant", "content": answer})
                 st.markdown(answer)
